@@ -616,10 +616,11 @@ void shader_core_ctx::fetch()
                         did_exit=true;
                     }
                 }
-                if( did_exit ) 
+                if( did_exit ){ 
 					m_stats->ibuffer_stall[get_sid()]+=m_warp[warp_id].get_ibuffer_stall();
 					m_stats->sched_stall[get_sid()]+=m_warp[warp_id].get_sched_stall();
                     m_warp[warp_id].set_done_exit();
+				}
             }
 
             // this code fetches instructions from the i-cache or generates memory requests
