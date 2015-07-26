@@ -372,6 +372,7 @@ void shader_core_stats::print( FILE* fout ) const
         thread_icount_uarch += m_num_sim_insn[i];
         warp_icount_uarch += m_num_sim_winsn[i];
     }
+
     fprintf(fout,"gpgpu_n_tot_thrd_icount = %lld\n", thread_icount_uarch);
     fprintf(fout,"gpgpu_n_tot_w_icount = %lld\n", warp_icount_uarch);
 
@@ -600,7 +601,6 @@ void shader_core_ctx::fetch()
         // and get next 1-2 instructions from i-cache...
         for( unsigned i=0; i < m_config->max_warps_per_shader; i++ ) {
             unsigned warp_id = (m_last_warp_fetched+1+i) % m_config->max_warps_per_shader;
-
             // this code checks if this warp has finished executing and can be reclaimed
             if( m_warp[warp_id].hardware_done() && !m_scoreboard->pendingWrites(warp_id) && !m_warp[warp_id].done_exit() ) {
                 bool did_exit=false;
@@ -617,6 +617,8 @@ void shader_core_ctx::fetch()
                     }
                 }
                 if( did_exit ) 
+					m_stats->ibuffer_stall[get_sid()]+=m_warp[warp_id].get_ibuffer_stall();
+					m_stats->sched_stall[get_sid()]+=m_warp[warp_id].get_sched_stall();
                     m_warp[warp_id].set_done_exit();
             }
 
@@ -816,10 +818,14 @@ void scheduler_unit::cycle()
         }
         SCHED_DPRINTF( "Testing (warp_id %u, dynamic_warp_id %u)\n",
                        (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id() );
-        unsigned warp_id = (*iter)->get_warp_id();
+    	unsigned warp_id = (*iter)->get_warp_id();
         unsigned checked=0;
         unsigned issued=0;
         unsigned max_issue = m_shader->m_config->gpgpu_max_insn_issue_per_warp;
+		// Caculate Latency
+		if(warp(warp_id).ibuffer_empty())
+			warp(warp_id).inc_ibuffer_stall();
+			
         while( !warp(warp_id).waiting() && !warp(warp_id).ibuffer_empty() && (checked < max_issue) && (checked <= issued) && (issued < max_issue) ) {
             const warp_inst_t *pI = warp(warp_id).ibuffer_next_inst();
             bool valid = warp(warp_id).ibuffer_next_valid();
@@ -845,6 +851,7 @@ void scheduler_unit::cycle()
                         ready_inst = true;
                         const active_mask_t &active_mask = m_simt_stack[warp_id]->get_active_mask();
                         assert( warp(warp_id).inst_in_pipeline() );
+						/* LD/St Unit */
                         if ( (pI->op == LOAD_OP) || (pI->op == STORE_OP) || (pI->op == MEMORY_BARRIER_OP) ) {
                             if( m_mem_out->has_free() ) {
                                 m_shader->issue_warp(*m_mem_out,pI,active_mask,warp_id);
@@ -852,6 +859,7 @@ void scheduler_unit::cycle()
                                 issued_inst=true;
                                 warp_inst_issued = true;
                             }
+						/* SU/SFU Units */
                         } else {
                             bool sp_pipe_avail = m_sp_out->has_free();
                             bool sfu_pipe_avail = m_sfu_out->has_free();
@@ -891,6 +899,8 @@ void scheduler_unit::cycle()
             checked++;
         }
         if ( issued ) {
+//			warp(warp_id).set_last_issued(gpu_sim_cycle);
+			warp(warp_id).accu_sched_stall(gpu_sim_cycle);
             // This might be a bit inefficient, but we need to maintain
             // two ordered list for proper scheduler execution.
             // We could remove the need for this loop by associating a
@@ -1242,6 +1252,7 @@ void shader_core_ctx::writeback()
     	 * assuming there are enough ports in the register file or the
     	 * conflicts are resolved at issue.
     	 */
+
     	/*
     	 * The operand collector writeback can generally generate a stall
     	 * However, here, the pipelines should be un-stallable. This is
@@ -1266,6 +1277,7 @@ void shader_core_ctx::writeback()
         pipe_reg->clear();
         preg = m_pipeline_reg[EX_WB].get_ready();
         pipe_reg = (preg==NULL)? NULL:*preg;
+		m_warp[warp_id].set_last_issued(gpu_sim_cycle);
     }
 }
 
@@ -2000,6 +2012,7 @@ void gpgpu_sim::shader_print_scheduler_stat( FILE* fout, bool print_dynamic_info
     }
     fprintf( fout, "\n" );
 }
+
 
 void gpgpu_sim::shader_print_cache_stats( FILE *fout ) const{
 

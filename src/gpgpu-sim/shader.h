@@ -71,6 +71,7 @@
 #define WRITE_MASK_SIZE 8
 
 
+
 class thread_ctx_t {
 public:
    unsigned m_cta_id; // hardware CTA this thread belongs
@@ -90,6 +91,8 @@ public:
     shd_warp_t( class shader_core_ctx *shader, unsigned warp_size) 
         : m_shader(shader), m_warp_size(warp_size)
     {
+		m_ibuffer_stall=0;
+		m_sched_stall=0;
         m_stores_outstanding=0;
         m_inst_in_pipeline=0;
         reset(); 
@@ -143,6 +146,14 @@ public:
         m_active_threads.reset(lane);
         n_completed++; 
     }
+
+	/* accumulate scheduling stall */
+	void accu_sched_stall( unsigned long long sim_cycle ) { m_sched_stall += (sim_cycle - m_last_fetch); }
+	void set_last_issued( unsigned long long sim_cycle ) { m_last_issued = sim_cycle; }
+    unsigned long long get_sched_stall() const { return m_sched_stall; }
+	void inc_ibuffer_stall () {m_ibuffer_stall++; }
+	unsigned long long get_ibuffer_stall() const {return m_ibuffer_stall; }
+
 
     void set_last_fetch( unsigned long long sim_cycle ) { m_last_fetch=sim_cycle; }
 
@@ -257,6 +268,9 @@ private:
     bool m_done_exit; // true once thread exit has been registered for threads in this warp
 
     unsigned long long m_last_fetch;
+	unsigned long long m_last_issued;
+	unsigned long long m_sched_stall;
+	unsigned long long m_ibuffer_stall;
 
     unsigned m_stores_outstanding; // number of store requests sent but not yet acknowledged
     unsigned m_inst_in_pipeline;
@@ -1333,6 +1347,8 @@ struct shader_core_stats_pod {
 
 	void* shader_core_stats_pod_start[0]; // DO NOT MOVE FROM THE TOP - spaceless pointer to the start of this structure
 	unsigned long long *shader_cycles;
+	unsigned long long *sched_stall;
+	unsigned long long *ibuffer_stall;
     unsigned *m_num_sim_insn; // number of scalar thread instructions committed by this shader core
     unsigned *m_num_sim_winsn; // number of warp instructions committed by this shader core
 	unsigned *m_last_num_sim_insn;
@@ -1415,6 +1431,8 @@ public:
         shader_core_stats_pod *pod = reinterpret_cast< shader_core_stats_pod * > ( this->shader_core_stats_pod_start );
         memset(pod,0,sizeof(shader_core_stats_pod));
         shader_cycles=(unsigned long long *) calloc(config->num_shader(),sizeof(unsigned long long ));
+        sched_stall=(unsigned long long *) calloc(config->num_shader(),sizeof(unsigned long long ));
+        ibuffer_stall=(unsigned long long *) calloc(config->num_shader(),sizeof(unsigned long long ));
         m_num_sim_insn = (unsigned*) calloc(config->num_shader(),sizeof(unsigned));
         m_num_sim_winsn = (unsigned*) calloc(config->num_shader(),sizeof(unsigned));
         m_last_num_sim_winsn = (unsigned*) calloc(config->num_shader(),sizeof(unsigned));
