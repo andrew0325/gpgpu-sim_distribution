@@ -150,8 +150,10 @@ public:
 	/* accumulate scheduling stall */
 	void accu_sched_stall( unsigned long long sim_cycle ) { m_sched_stall += (sim_cycle - m_last_fetch); }
 	void set_last_issued( unsigned long long sim_cycle ) { m_last_issued = sim_cycle; }
+	void reset_sched_stall() {m_last_issued = 0; m_sched_stall = 0; }
     unsigned long long get_sched_stall() const { return m_sched_stall; }
 	void inc_ibuffer_stall () {m_ibuffer_stall++; }
+	void reset_ibuffer_stall () {m_ibuffer_stall = 0; }
 	unsigned long long get_ibuffer_stall() const {return m_ibuffer_stall; }
 
 

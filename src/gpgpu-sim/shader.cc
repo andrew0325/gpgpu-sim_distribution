@@ -619,6 +619,8 @@ void shader_core_ctx::fetch()
                 if( did_exit ){ 
 					m_stats->ibuffer_stall[get_sid()]+=m_warp[warp_id].get_ibuffer_stall();
 					m_stats->sched_stall[get_sid()]+=m_warp[warp_id].get_sched_stall();
+					m_warp[warp_id].reset_sched_stall();
+					m_warp[warp_id].reset_ibuffer_stall();
                     m_warp[warp_id].set_done_exit();
 				}
             }
