@@ -372,7 +372,6 @@ void shader_core_stats::print( FILE* fout ) const
         thread_icount_uarch += m_num_sim_insn[i];
         warp_icount_uarch += m_num_sim_winsn[i];
     }
-
     fprintf(fout,"gpgpu_n_tot_thrd_icount = %lld\n", thread_icount_uarch);
     fprintf(fout,"gpgpu_n_tot_w_icount = %lld\n", warp_icount_uarch);
 
@@ -443,9 +442,18 @@ void shader_core_stats::print( FILE* fout ) const
    fprintf(fout, "gpu_reg_bank_conflict_stalls = %d\n", gpu_reg_bank_conflict_stalls);
 
    fprintf(fout, "Warp Occupancy Distribution:\n");
-   fprintf(fout, "Stall:%d\t", shader_cycle_distro[2]);
-   fprintf(fout, "W0_Idle:%d\t", shader_cycle_distro[0]);
-   fprintf(fout, "W0_Scoreboard:%d", shader_cycle_distro[1]);
+//   fprintf(fout, "Stall:%d\t", shader_cycle_distro[2]);
+//   fprintf(fout, "W0_Idle:%d\t", shader_cycle_distro[0]);
+//   fprintf(fout, "W0_Scoreboard:%d", shader_cycle_distro[1]);
+   fprintf(fout, "Initialization Hazard: %d\n", shader_cycle_distro[m_config->warp_size + 7]);
+   fprintf(fout, "Scheduling Stall: %d\n", shader_cycle_distro[m_config->warp_size + 8]);
+   fprintf(fout, "Sync Hazard: %d\n", shader_cycle_distro[0]);
+   fprintf(fout, "Ibuffer Hazard: %d\n", shader_cycle_distro[1]);
+   fprintf(fout, "Control Hazard: %d\n", shader_cycle_distro[2]);
+   fprintf(fout, "Dependency Hazard: %d\n", shader_cycle_distro[m_config->warp_size + 3]);
+   fprintf(fout, "Funtional Unit Hazard: %d\n", shader_cycle_distro[m_config->warp_size + 4]);
+   fprintf(fout, "Memory Unit Hazard: %d\n", shader_cycle_distro[m_config->warp_size + 5]);
+   fprintf(fout, "Execution: %d\n", shader_cycle_distro[m_config->warp_size + 6]);
    for (unsigned i = 3; i < m_config->warp_size + 3; i++) 
       fprintf(fout, "\tW%d:%d", i-2, shader_cycle_distro[i]);
    fprintf(fout, "\n");
@@ -601,6 +609,7 @@ void shader_core_ctx::fetch()
         // and get next 1-2 instructions from i-cache...
         for( unsigned i=0; i < m_config->max_warps_per_shader; i++ ) {
             unsigned warp_id = (m_last_warp_fetched+1+i) % m_config->max_warps_per_shader;
+
             // this code checks if this warp has finished executing and can be reclaimed
             if( m_warp[warp_id].hardware_done() && !m_scoreboard->pendingWrites(warp_id) && !m_warp[warp_id].done_exit() ) {
                 bool did_exit=false;
@@ -616,12 +625,13 @@ void shader_core_ctx::fetch()
                         did_exit=true;
                     }
                 }
-                if( did_exit ){ 
-					m_stats->ibuffer_stall[get_sid()]+=m_warp[warp_id].get_ibuffer_stall();
-					m_stats->sched_stall[get_sid()]+=m_warp[warp_id].get_sched_stall();
-					m_warp[warp_id].reset_sched_stall();
-					m_warp[warp_id].reset_ibuffer_stall();
+                if( did_exit ) {
                     m_warp[warp_id].set_done_exit();
+					m_warp[warp_id].avg_sched_stall();
+					//printf("accu_sched_stall: %lld\n", m_warp[warp_id].get_accu_sched_stall());
+//					m_stats->shader_cycle_distro[m_config->warp_size + 8] += m_warp[warp_id].get_avg_sched_stall();
+					m_stats->shader_cycle_distro[m_config->warp_size + 8] += m_warp[warp_id].get_accu_sched_stall();
+					
 				}
             }
 
@@ -821,14 +831,24 @@ void scheduler_unit::cycle()
         }
         SCHED_DPRINTF( "Testing (warp_id %u, dynamic_warp_id %u)\n",
                        (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id() );
-    	unsigned warp_id = (*iter)->get_warp_id();
+        unsigned warp_id = (*iter)->get_warp_id();
         unsigned checked=0;
         unsigned issued=0;
         unsigned max_issue = m_shader->m_config->gpgpu_max_insn_issue_per_warp;
-		// Caculate Latency
-		if(warp(warp_id).ibuffer_empty())
-			warp(warp_id).inc_ibuffer_stall();
-			
+		if( warp(warp_id).waiting()){
+			if(warp(warp_id).functional_done())
+				m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 7]++; //Initialization Hazard
+			//else if(m_shader->warp_waiting_at_barrier(warp_id) && m_shader->warp_waiting_at_mem_barrier(warp_id))
+			else
+				m_stats->shader_cycle_distro[0]++; //Sync Hazard
+		}
+		else if( !warp(warp_id).waiting() && warp(warp_id).ibuffer_empty())
+        	m_stats->shader_cycle_distro[1]++; //Ibuffer Hazard 
+	
+		warp(warp_id).accu_sched_stall(gpu_sim_cycle);
+		warp(warp_id).set_last_sched(gpu_sim_cycle);
+		warp(warp_id).inc_sched_times();
+
         while( !warp(warp_id).waiting() && !warp(warp_id).ibuffer_empty() && (checked < max_issue) && (checked <= issued) && (issued < max_issue) ) {
             const warp_inst_t *pI = warp(warp_id).ibuffer_next_inst();
             bool valid = warp(warp_id).ibuffer_next_valid();
@@ -846,6 +866,7 @@ void scheduler_unit::cycle()
                     // control hazard
                     warp(warp_id).set_next_pc(pc);
                     warp(warp_id).ibuffer_flush();
+        			m_stats->shader_cycle_distro[2]++; //Control Hazard
                 } else {
                     valid_inst = true;
                     if ( !m_scoreboard->checkCollision(warp_id, pI) ) {
@@ -854,39 +875,47 @@ void scheduler_unit::cycle()
                         ready_inst = true;
                         const active_mask_t &active_mask = m_simt_stack[warp_id]->get_active_mask();
                         assert( warp(warp_id).inst_in_pipeline() );
-						/* LD/St Unit */
                         if ( (pI->op == LOAD_OP) || (pI->op == STORE_OP) || (pI->op == MEMORY_BARRIER_OP) ) {
                             if( m_mem_out->has_free() ) {
                                 m_shader->issue_warp(*m_mem_out,pI,active_mask,warp_id);
+        						m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 6]++; // Exec
                                 issued++;
                                 issued_inst=true;
                                 warp_inst_issued = true;
                             }
-						/* SU/SFU Units */
+							else
+        						m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 5]++; // MU Hazard
                         } else {
                             bool sp_pipe_avail = m_sp_out->has_free();
                             bool sfu_pipe_avail = m_sfu_out->has_free();
                             if( sp_pipe_avail && (pI->op != SFU_OP) ) {
                                 // always prefer SP pipe for operations that can use both SP and SFU pipelines
                                 m_shader->issue_warp(*m_sp_out,pI,active_mask,warp_id);
+        						m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 6]++; // Exec
                                 issued++;
                                 issued_inst=true;
                                 warp_inst_issued = true;
                             } else if ( (pI->op == SFU_OP) || (pI->op == ALU_SFU_OP) ) {
                                 if( sfu_pipe_avail ) {
                                     m_shader->issue_warp(*m_sfu_out,pI,active_mask,warp_id);
+        							m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 6]++; // Exec
                                     issued++;
                                     issued_inst=true;
                                     warp_inst_issued = true;
                                 }
-                            }                         }
+                            }
+							else
+        						m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 4]++; // FU Hazard
+                         }
                     } else {
                         SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) fails scoreboard\n",
                                        (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id() );
+        				m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 3]++; // Dependency Hazard
                     }
                 }
             } else if( valid ) {
                // this case can happen after a return instruction in diverged warp
+			   m_stats->shader_cycle_distro[2]++; //Control Hazard
                SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) return from diverged warp flush\n",
                               (*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id() );
                warp(warp_id).set_next_pc(pc);
@@ -902,8 +931,6 @@ void scheduler_unit::cycle()
             checked++;
         }
         if ( issued ) {
-//			warp(warp_id).set_last_issued(gpu_sim_cycle);
-			warp(warp_id).accu_sched_stall(gpu_sim_cycle);
             // This might be a bit inefficient, but we need to maintain
             // two ordered list for proper scheduler execution.
             // We could remove the need for this loop by associating a
@@ -921,12 +948,12 @@ void scheduler_unit::cycle()
     }
 
     // issue stall statistics:
-    if( !valid_inst ) 
+/*    if( !valid_inst ) 
         m_stats->shader_cycle_distro[0]++; // idle or control hazard
     else if( !ready_inst ) 
         m_stats->shader_cycle_distro[1]++; // waiting for RAW hazards (possibly due to memory) 
     else if( !issued_inst ) 
-        m_stats->shader_cycle_distro[2]++; // pipeline stalled
+        m_stats->shader_cycle_distro[2]++; // pipeline stalled*/
 }
 
 void scheduler_unit::do_on_warp_issued( unsigned warp_id,
@@ -1255,7 +1282,6 @@ void shader_core_ctx::writeback()
     	 * assuming there are enough ports in the register file or the
     	 * conflicts are resolved at issue.
     	 */
-
     	/*
     	 * The operand collector writeback can generally generate a stall
     	 * However, here, the pipelines should be un-stallable. This is
@@ -1280,7 +1306,6 @@ void shader_core_ctx::writeback()
         pipe_reg->clear();
         preg = m_pipeline_reg[EX_WB].get_ready();
         pipe_reg = (preg==NULL)? NULL:*preg;
-		m_warp[warp_id].set_last_issued(gpu_sim_cycle);
     }
 }
 
@@ -2015,7 +2040,6 @@ void gpgpu_sim::shader_print_scheduler_stat( FILE* fout, bool print_dynamic_info
     }
     fprintf( fout, "\n" );
 }
-
 
 void gpgpu_sim::shader_print_cache_stats( FILE *fout ) const{
 

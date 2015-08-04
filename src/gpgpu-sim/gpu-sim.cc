@@ -87,13 +87,6 @@ unsigned long long  gpu_tot_sim_cycle = 0;
 unsigned int gpu_stall_dramfull = 0; 
 unsigned int gpu_stall_icnt2sh = 0;
 
-
-//Latency breakdown
-unsigned long long gpu_sched_stall = 0;
-unsigned long long gpu_tot_sched_stall = 0;
-unsigned long long gpu_ibuffer_stall = 0;
-unsigned long long gpu_tot_ibuffer_stall = 0;
-
 /* Clock Domains */
 
 #define  CORE  0x01
@@ -893,24 +886,6 @@ void gpgpu_sim::gpu_print_stat()
    std::string kernel_info_str = executed_kernel_info_string(); 
    fprintf(statfout, "%s", kernel_info_str.c_str()); 
 
-   printf("======= Pipeline Latency Breakdown ======\n");
-   gpu_sched_stall = 0;
-   gpu_ibuffer_stall = 0;
-   for(int sid = 0; sid < (int) m_config.num_shader(); sid++){
-		gpu_sched_stall += m_shader_stats->sched_stall[sid];
-		gpu_ibuffer_stall += m_shader_stats->ibuffer_stall[sid];
-		m_shader_stats->sched_stall[sid] = 0;
-		m_shader_stats->ibuffer_stall[sid] = 0;
-   }
-   gpu_tot_sched_stall += gpu_sched_stall;
-   gpu_tot_ibuffer_stall += gpu_ibuffer_stall;
-
-   printf("gpu_sched_stall: %lld\n", gpu_sched_stall);
-   printf("gpu_ibuffer_stall: %lld\n", gpu_ibuffer_stall);
-   printf("gpu_tot_sched_stall: %lld\n", gpu_tot_sched_stall);
-   printf("gpu_tot_ibuffer_stall: %lld\n", gpu_tot_ibuffer_stall);
-
-   printf("====== GPU status ======\n")	;		
    printf("gpu_sim_cycle = %lld\n", gpu_sim_cycle);
    printf("gpu_sim_insn = %lld\n", gpu_sim_insn);
    printf("gpu_ipc = %12.4f\n", (float)gpu_sim_insn / gpu_sim_cycle);

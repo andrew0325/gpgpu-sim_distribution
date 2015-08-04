@@ -71,7 +71,6 @@
 #define WRITE_MASK_SIZE 8
 
 
-
 class thread_ctx_t {
 public:
    unsigned m_cta_id; // hardware CTA this thread belongs
@@ -91,8 +90,6 @@ public:
     shd_warp_t( class shader_core_ctx *shader, unsigned warp_size) 
         : m_shader(shader), m_warp_size(warp_size)
     {
-		m_ibuffer_stall=0;
-		m_sched_stall=0;
         m_stores_outstanding=0;
         m_inst_in_pipeline=0;
         reset(); 
@@ -111,6 +108,10 @@ public:
         m_last_fetch=0;
         m_next=0;
         m_inst_at_barrier=NULL;
+		m_last_sched=0;
+		m_sched_times=0;
+		m_accu_sched_stall=0;
+		m_avg_sched_stall=0;
     }
     void init( address_type start_pc,
                unsigned cta_id,
@@ -147,17 +148,14 @@ public:
         n_completed++; 
     }
 
-	/* accumulate scheduling stall */
-	void accu_sched_stall( unsigned long long sim_cycle ) { m_sched_stall += (sim_cycle - m_last_fetch); }
-	void set_last_issued( unsigned long long sim_cycle ) { m_last_issued = sim_cycle; }
-	void reset_sched_stall() {m_last_issued = 0; m_sched_stall = 0; }
-    unsigned long long get_sched_stall() const { return m_sched_stall; }
-	void inc_ibuffer_stall () {m_ibuffer_stall++; }
-	void reset_ibuffer_stall () {m_ibuffer_stall = 0; }
-	unsigned long long get_ibuffer_stall() const {return m_ibuffer_stall; }
-
-
     void set_last_fetch( unsigned long long sim_cycle ) { m_last_fetch=sim_cycle; }
+	/* Scheduling Stall */
+	void set_last_sched( unsigned long long sim_cycle ) { m_last_sched=sim_cycle; }
+	void accu_sched_stall( unsigned long long sim_cycle ) { m_accu_sched_stall+=(sim_cycle - m_last_sched); }
+	void inc_sched_times() { m_sched_times++; }
+	void avg_sched_stall() { m_avg_sched_stall = m_accu_sched_stall/m_sched_times; }
+	unsigned long long get_avg_sched_stall() { return m_avg_sched_stall; }
+	unsigned long long get_accu_sched_stall() { return m_accu_sched_stall; }
 
     unsigned get_n_atomic() const { return m_n_atomic; }
     void inc_n_atomic() { m_n_atomic++; }
@@ -270,9 +268,11 @@ private:
     bool m_done_exit; // true once thread exit has been registered for threads in this warp
 
     unsigned long long m_last_fetch;
-	unsigned long long m_last_issued;
-	unsigned long long m_sched_stall;
-	unsigned long long m_ibuffer_stall;
+
+	unsigned long long m_last_sched;
+	unsigned long long m_sched_times;
+	unsigned long long m_accu_sched_stall;
+	unsigned long long m_avg_sched_stall;
 
     unsigned m_stores_outstanding; // number of store requests sent but not yet acknowledged
     unsigned m_inst_in_pipeline;
@@ -1349,8 +1349,6 @@ struct shader_core_stats_pod {
 
 	void* shader_core_stats_pod_start[0]; // DO NOT MOVE FROM THE TOP - spaceless pointer to the start of this structure
 	unsigned long long *shader_cycles;
-	unsigned long long *sched_stall;
-	unsigned long long *ibuffer_stall;
     unsigned *m_num_sim_insn; // number of scalar thread instructions committed by this shader core
     unsigned *m_num_sim_winsn; // number of warp instructions committed by this shader core
 	unsigned *m_last_num_sim_insn;
@@ -1433,8 +1431,6 @@ public:
         shader_core_stats_pod *pod = reinterpret_cast< shader_core_stats_pod * > ( this->shader_core_stats_pod_start );
         memset(pod,0,sizeof(shader_core_stats_pod));
         shader_cycles=(unsigned long long *) calloc(config->num_shader(),sizeof(unsigned long long ));
-        sched_stall=(unsigned long long *) calloc(config->num_shader(),sizeof(unsigned long long ));
-        ibuffer_stall=(unsigned long long *) calloc(config->num_shader(),sizeof(unsigned long long ));
         m_num_sim_insn = (unsigned*) calloc(config->num_shader(),sizeof(unsigned));
         m_num_sim_winsn = (unsigned*) calloc(config->num_shader(),sizeof(unsigned));
         m_last_num_sim_winsn = (unsigned*) calloc(config->num_shader(),sizeof(unsigned));
@@ -1471,8 +1467,8 @@ public:
         m_write_regfile_acesses= (unsigned*) calloc(config->num_shader(),sizeof(unsigned));
         m_non_rf_operands=(unsigned*) calloc(config->num_shader(),sizeof(unsigned));
         m_n_diverge = (unsigned*) calloc(config->num_shader(),sizeof(unsigned));
-        shader_cycle_distro = (unsigned*) calloc(config->warp_size+3, sizeof(unsigned));
-        last_shader_cycle_distro = (unsigned*) calloc(m_config->warp_size+3, sizeof(unsigned));
+        shader_cycle_distro = (unsigned*) calloc(config->warp_size+9, sizeof(unsigned));
+        last_shader_cycle_distro = (unsigned*) calloc(m_config->warp_size+9, sizeof(unsigned));
 
         n_simt_to_mem = (long *)calloc(config->num_shader(), sizeof(long));
         n_mem_to_simt = (long *)calloc(config->num_shader(), sizeof(long));
