@@ -216,7 +216,7 @@ void gpgpu_ptxinfo_load_from_string( const char *p_for_info, unsigned source_num
     extra_flags[0]=0;
 
 #if CUDART_VERSION >= 3000
-    snprintf(extra_flags,1024,"--gpu-name=sm_20");
+    snprintf(extra_flags,1024,"--gpu-name=sm_21");
 #endif
 
     snprintf(commandline,1024,"$CUDA_INSTALL_PATH/bin/ptxas %s -v %s --output-file  /dev/null 2> %s",

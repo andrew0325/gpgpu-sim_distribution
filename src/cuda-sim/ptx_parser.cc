@@ -554,7 +554,7 @@ void add_ptr_spec( enum _memory_space_t spec )
 {
    PTX_PARSE_DPRINTF("add_ptr_spec \"%s\"", g_ptx_token_decode[spec].c_str() );
    parse_assert( g_ptr_spec == undefined_space, "multiple ptr space specifiers not allowed." );
-   parse_assert( spec == global_space or spec == local_space or spec == shared_space, "invalid space for ptr directive." );
+   parse_assert( spec == global_space or spec == local_space or spec == shared_space or spec == const_space, "invalid space for ptr directive." );
    g_ptr_spec = spec; 
 }
 
