@@ -469,7 +469,7 @@ void shader_core_stats::print( FILE* fout ) const
 	fprintf(fout, "CALL_OPS: %lld\n", shader_cycle_distro[m_config->warp_size + 16]);
 	fprintf(fout, "RET_OPS: %lld\n", shader_cycle_distro[m_config->warp_size + 17]);
 	for (unsigned i = 3; i < m_config->warp_size + 3; i++) 
-		fprintf(fout, "\tW%d:%d", i-2, shader_cycle_distro[i]);
+		fprintf(fout, "\tW%d:%lld", i-2, shader_cycle_distro[i]);
 	fprintf(fout, "\n");
 
 	m_outgoing_traffic_stats->print(fout); 
@@ -713,9 +713,51 @@ void shader_core_ctx::issue_warp( register_set& pipe_reg_set, const warp_inst_t*
 	m_warp[warp_id].ibuffer_free();
 	assert(next_inst->valid());
 	**pipe_reg = *next_inst; // static instruction information
+//	unsigned last_op = (*pipe_reg)->op;
+//	unsigned last_active = (*pipe_reg)->active_count();
 	(*pipe_reg)->issue( active_mask, warp_id, gpu_tot_sim_cycle + gpu_sim_cycle, m_warp[warp_id].get_dynamic_warp_id() ); // dynamic instruction information
 	m_stats->shader_cycle_distro[2+(*pipe_reg)->active_count()]++;
+
+	/* Calculate the branch divergence ratio */
 	func_exec_inst( **pipe_reg );
+	//switch(last_op){
+	switch(next_inst->op){
+		case NO_OP:
+			m_stats->shader_cycle_distro[m_config->warp_size + 9]++; 
+			break;
+		case ALU_OP:
+			m_stats->shader_cycle_distro[m_config->warp_size + 10]++; 
+			break;
+		case SFU_OP:
+			m_stats->shader_cycle_distro[m_config->warp_size + 11]++; 
+			break;
+		case ALU_SFU_OP:
+			m_stats->shader_cycle_distro[m_config->warp_size + 12]++; 
+			break;	
+		case BRANCH_OP:
+			m_stats->shader_cycle_distro[m_config->warp_size + 13]++; 
+			//if((*pipe_reg)->active_count() != last_active) 
+			if((*pipe_reg)->active_count() != next_inst->active_count()) 
+				m_stats->shader_cycle_distro[m_config->warp_size + 18]++;
+			break;	
+		case BARRIER_OP:
+			m_stats->shader_cycle_distro[m_config->warp_size + 14]++; 
+			break;	
+		case MEMORY_BARRIER_OP:
+			m_stats->shader_cycle_distro[m_config->warp_size + 15]++; 
+			break;	
+		case CALL_OPS:
+			m_stats->shader_cycle_distro[m_config->warp_size + 16]++; 
+			break;	
+		case RET_OPS:
+			m_stats->shader_cycle_distro[m_config->warp_size + 17]++; 
+			break;	
+		case LOAD_OP:
+		case STORE_OP:
+			break;
+	}
+	//////////////////////////////////////////
+
 	if( next_inst->op == BARRIER_OP ){
 		m_warp[warp_id].store_info_of_last_inst_at_barrier(*pipe_reg);
 		m_barriers.warp_reaches_barrier(m_warp[warp_id].get_cta_id(),warp_id,const_cast<warp_inst_t*> (next_inst));
@@ -881,8 +923,7 @@ void scheduler_unit::cycle()
 					warp(warp_id).set_next_pc(pc);
 					warp(warp_id).ibuffer_flush();
 					m_stats->shader_cycle_distro[2]++; //Control Hazard
-					if(pI->active_count() != 32)
-						m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 18]++; //diverged warp count
+//						m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 18]++; //diverged warp count
 						
 				} else {
 					valid_inst = true;
@@ -920,8 +961,10 @@ void scheduler_unit::cycle()
 									issued_inst=true;
 									warp_inst_issued = true;
 								}
+								else
+									m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 4]++; // FU Hazard
 							}
-							else
+							else if(!sp_pipe_avail)
 								m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 4]++; // FU Hazard
 						}
 					} else {
@@ -930,7 +973,7 @@ void scheduler_unit::cycle()
 						m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 3]++; // Dependency Hazard
 					}
 				}
-				if(warp_inst_issued) {
+/*				if(warp_inst_issued) {
 					switch(pI->op){
 						case NO_OP:
 							m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 9]++; 
@@ -959,10 +1002,14 @@ void scheduler_unit::cycle()
 						case RET_OPS:
 							m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 17]++; 
 							break;	
+						case LOAD_OP:
+						case STORE_OP:
+							break;
 						default:
+							printf("No defined ops: %d\n", pI->op);
 							break;
 					}
-				}
+				}*/
 			} else if( valid ) {
 				// this case can happen after a return instruction in diverged warp
 				m_stats->shader_cycle_distro[2]++; //Control Hazard
@@ -1237,26 +1284,26 @@ unsigned shader_core_ctx::translate_local_memaddr( address_type localaddr, unsig
 	void shader_core_ctx::execute()
 	{
 	for(unsigned i=0; i<num_result_bus; i++){
-					    *(m_result_bus[i]) >>=1;
-					    }
-					    for( unsigned n=0; n < m_num_function_units; n++ ) {
-					    unsigned multiplier = m_fu[n]->clock_multiplier();
-					    for( unsigned c=0; c < multiplier; c++ ) 
-					    m_fu[n]->cycle();
-					    m_fu[n]->active_lanes_in_pipeline();
-					    enum pipeline_stage_name_t issue_port = m_issue_port[n];
-					    register_set& issue_inst = m_pipeline_reg[ issue_port ];
-					    warp_inst_t** ready_reg = issue_inst.get_ready();
-					    if( issue_inst.has_ready() && m_fu[n]->can_issue( **ready_reg ) ) {
-					    bool schedule_wb_now = !m_fu[n]->stallable();
-					    int resbus = -1;
-					    if( schedule_wb_now && (resbus=test_res_bus( (*ready_reg)->latency ))!=-1 ) {
-					    assert( (*ready_reg)->latency < MAX_ALU_LATENCY );
-					    m_result_bus[resbus]->set( (*ready_reg)->latency );
-					    m_fu[n]->issue( issue_inst );
-					    } else if( !schedule_wb_now ) {
-					    m_fu[n]->issue( issue_inst );
-					    } else {
+										*(m_result_bus[i]) >>=1;
+										}
+										for( unsigned n=0; n < m_num_function_units; n++ ) {
+										unsigned multiplier = m_fu[n]->clock_multiplier();
+										for( unsigned c=0; c < multiplier; c++ ) 
+										m_fu[n]->cycle();
+										m_fu[n]->active_lanes_in_pipeline();
+										enum pipeline_stage_name_t issue_port = m_issue_port[n];
+										register_set& issue_inst = m_pipeline_reg[ issue_port ];
+										warp_inst_t** ready_reg = issue_inst.get_ready();
+										if( issue_inst.has_ready() && m_fu[n]->can_issue( **ready_reg ) ) {
+										bool schedule_wb_now = !m_fu[n]->stallable();
+										int resbus = -1;
+										if( schedule_wb_now && (resbus=test_res_bus( (*ready_reg)->latency ))!=-1 ) {
+										assert( (*ready_reg)->latency < MAX_ALU_LATENCY );
+										m_result_bus[resbus]->set( (*ready_reg)->latency );
+										m_fu[n]->issue( issue_inst );
+										} else if( !schedule_wb_now ) {
+										m_fu[n]->issue( issue_inst );
+										} else {
 	// stall issue (cannot reserve result bus)
 	}
 	}
