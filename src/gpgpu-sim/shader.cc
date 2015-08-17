@@ -737,7 +737,7 @@ void shader_core_ctx::issue_warp( register_set& pipe_reg_set, const warp_inst_t*
 		case BRANCH_OP:
 			m_stats->shader_cycle_distro[m_config->warp_size + 13]++; 
 			//if((*pipe_reg)->active_count() != last_active) 
-			if((*pipe_reg)->active_count() != next_inst->active_count()) 
+			if((*pipe_reg)->active_count() != next_inst->active_count() && (*pipe_reg)->active_count() != 0 && (*pipe_reg)->active_count() != m_config->warp_size) 
 				m_stats->shader_cycle_distro[m_config->warp_size + 18]++;
 			break;	
 		case BARRIER_OP:
