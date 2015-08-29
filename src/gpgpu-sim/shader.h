@@ -1467,8 +1467,8 @@ public:
         m_write_regfile_acesses= (unsigned*) calloc(config->num_shader(),sizeof(unsigned));
         m_non_rf_operands=(unsigned*) calloc(config->num_shader(),sizeof(unsigned));
         m_n_diverge = (unsigned*) calloc(config->num_shader(),sizeof(unsigned));
-        shader_cycle_distro = (unsigned long long*) calloc(config->warp_size+19, sizeof(unsigned long long));
-        last_shader_cycle_distro = (unsigned long long*) calloc(m_config->warp_size+19, sizeof(unsigned long long));
+        shader_cycle_distro = (unsigned long long*) calloc(config->warp_size+22, sizeof(unsigned long long));
+        last_shader_cycle_distro = (unsigned long long*) calloc(m_config->warp_size+22, sizeof(unsigned long long));
 
         n_simt_to_mem = (long *)calloc(config->num_shader(), sizeof(long));
         n_mem_to_simt = (long *)calloc(config->num_shader(), sizeof(long));

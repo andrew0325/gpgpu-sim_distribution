@@ -442,9 +442,9 @@ void shader_core_stats::print( FILE* fout ) const
 	fprintf(fout, "gpu_reg_bank_conflict_stalls = %d\n", gpu_reg_bank_conflict_stalls);
 
 	fprintf(fout, "Warp Occupancy Distribution:\n");
-	//   fprintf(fout, "Stall:%d\t", shader_cycle_distro[2]);
-	//   fprintf(fout, "W0_Idle:%d\t", shader_cycle_distro[0]);
-	//   fprintf(fout, "W0_Scoreboard:%d", shader_cycle_distro[1]);
+	fprintf(fout, "Stall:(structural hazard)%d\n", shader_cycle_distro[21]);
+	fprintf(fout, "W0_Idle(control hazard, ibuffer hazard, sync hazard or idle):%d\n", shader_cycle_distro[19]);
+	fprintf(fout, "W0_Scoreboard(dependency hazard):%d\n", shader_cycle_distro[20]);
 	fprintf(fout, "Initialization Hazard: %lld\n", shader_cycle_distro[m_config->warp_size + 7]);
 	fprintf(fout, "Scheduling Stall: %lld\n", shader_cycle_distro[m_config->warp_size + 8]);
 	fprintf(fout, "Sync Hazard: %lld\n", shader_cycle_distro[0]);
@@ -1046,7 +1046,7 @@ void scheduler_unit::cycle()
 	}
 
 	// issue stall statistics:
-	/*    if( !valid_inst ) 
+    if( !valid_inst ) 
 	      m_stats->shader_cycle_distro[0]++; // idle or control hazard
 	      else if( !ready_inst ) 
 	      m_stats->shader_cycle_distro[1]++; // waiting for RAW hazards (possibly due to memory) 
