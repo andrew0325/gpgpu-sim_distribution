@@ -1047,11 +1047,11 @@ void scheduler_unit::cycle()
 
 	// issue stall statistics:
     if( !valid_inst ) 
-	      m_stats->shader_cycle_distro[0]++; // idle or control hazard
+	      m_stats->shader_cycle_distro[19]++; // idle or control hazard
 	      else if( !ready_inst ) 
-	      m_stats->shader_cycle_distro[1]++; // waiting for RAW hazards (possibly due to memory) 
+	      m_stats->shader_cycle_distro[20]++; // waiting for RAW hazards (possibly due to memory) 
 	      else if( !issued_inst ) 
-	      m_stats->shader_cycle_distro[2]++; // pipeline stalled*/
+	      m_stats->shader_cycle_distro[21]++; // pipeline stalled*/
 }
 
 void scheduler_unit::do_on_warp_issued( unsigned warp_id,
