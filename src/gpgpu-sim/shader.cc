@@ -442,12 +442,12 @@ void shader_core_stats::print( FILE* fout ) const
 	fprintf(fout, "gpu_reg_bank_conflict_stalls = %d\n", gpu_reg_bank_conflict_stalls);
 
 	fprintf(fout, "Warp Occupancy Distribution:\n");
-	fprintf(fout, "Stall:(structural hazard)%d\n", shader_cycle_distro[21]);
-	fprintf(fout, "W0_Idle(control hazard, ibuffer hazard, sync hazard or idle):%d\n", shader_cycle_distro[19]);
-	fprintf(fout, "W0_Scoreboard(dependency hazard):%d\n", shader_cycle_distro[20]);
-	fprintf(fout, "Initialization Hazard: %lld\n", shader_cycle_distro[m_config->warp_size + 7]);
+	fprintf(fout, "Stall:(structural hazard): %lld\n", shader_cycle_distro[m_config->warp_size + 21]);
+	fprintf(fout, "W0_Idle(control hazard, ibuffer hazard, sync hazard or idle):%lld\n", shader_cycle_distro[m_config->warp_size + 19]);
+	fprintf(fout, "W0_Scoreboard(dependency hazard):%lld\n", shader_cycle_distro[m_config->warp_size + 20]);
+	fprintf(fout, "Warp Unbalanced Stall: %lld\n", shader_cycle_distro[m_config->warp_size + 7]);
 	fprintf(fout, "Scheduling Stall: %lld\n", shader_cycle_distro[m_config->warp_size + 8]);
-	fprintf(fout, "Sync Hazard: %lld\n", shader_cycle_distro[0]);
+	fprintf(fout, "Sync Stall: %lld\n", shader_cycle_distro[0]);
 	fprintf(fout, "Ibuffer Hazard: %lld\n", shader_cycle_distro[1]);
 	fprintf(fout, "Control Hazard: %lld\n", shader_cycle_distro[2]);
 	fprintf(fout, "Dependency Hazard: %lld\n", shader_cycle_distro[m_config->warp_size + 3]);
@@ -713,8 +713,8 @@ void shader_core_ctx::issue_warp( register_set& pipe_reg_set, const warp_inst_t*
 	m_warp[warp_id].ibuffer_free();
 	assert(next_inst->valid());
 	**pipe_reg = *next_inst; // static instruction information
-//	unsigned last_op = (*pipe_reg)->op;
-//	unsigned last_active = (*pipe_reg)->active_count();
+	//	unsigned last_op = (*pipe_reg)->op;
+	//	unsigned last_active = (*pipe_reg)->active_count();
 	(*pipe_reg)->issue( active_mask, warp_id, gpu_tot_sim_cycle + gpu_sim_cycle, m_warp[warp_id].get_dynamic_warp_id() ); // dynamic instruction information
 	m_stats->shader_cycle_distro[2+(*pipe_reg)->active_count()]++;
 
@@ -876,6 +876,11 @@ void scheduler_unit::cycle()
 	bool valid_inst = false;  // there was one warp with a valid instruction to issue (didn't require flush due to control hazard)
 	bool ready_inst = false;  // of the valid instructions, there was one not waiting for pending register writes
 	bool issued_inst = false; // of these we issued one
+	bool no_sync = false;
+	bool valid_ibff = false;
+	bool MU_hzrd = false;
+	bool FU_hzrd = false;
+	bool unblnce_stall = false;
 
 	order_warps();
 	for ( std::vector< shd_warp_t* >::const_iterator iter = m_next_cycle_prioritized_warps.begin();
@@ -891,143 +896,134 @@ void scheduler_unit::cycle()
 		unsigned checked=0;
 		unsigned issued=0;
 		unsigned max_issue = m_shader->m_config->gpgpu_max_insn_issue_per_warp;
-		if( warp(warp_id).waiting()){
-			if(warp(warp_id).functional_done())
+/*		if( warp(warp_id).waiting()){
+			if(warp(warp_id).functional_done()){
+				//				INIT_stall = true;
 				m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 7]++; //Initialization Hazard
+			}
 			//else if(m_shader->warp_waiting_at_barrier(warp_id) && m_shader->warp_waiting_at_mem_barrier(warp_id))
-			else
+			else{
 				m_stats->shader_cycle_distro[0]++; //Sync Hazard
+				//				SYNC_stall = true;
+			}
 		}
-		else if( !warp(warp_id).waiting() && warp(warp_id).ibuffer_empty())
+		else if( !warp(warp_id).waiting() && warp(warp_id).ibuffer_empty()){
 			m_stats->shader_cycle_distro[1]++; //Ibuffer Hazard 
+			//			Ibff_stall = true;
+		}*/
 
 		warp(warp_id).accu_sched_stall(gpu_sim_cycle);
 		warp(warp_id).set_last_sched(gpu_sim_cycle);
 		warp(warp_id).inc_sched_times();
 
-		while( !warp(warp_id).waiting() && !warp(warp_id).ibuffer_empty() && (checked < max_issue) && (checked <= issued) && (issued < max_issue) ) {
-			const warp_inst_t *pI = warp(warp_id).ibuffer_next_inst();
-			bool valid = warp(warp_id).ibuffer_next_valid();
-			bool warp_inst_issued = false;
-			unsigned pc,rpc;
-			m_simt_stack[warp_id]->get_pdom_stack_top_info(&pc,&rpc);
-			SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) has valid instruction (%s)\n",
-					(*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id(),
-					ptx_get_insn_str( pc).c_str() );
-			if( pI ) {
-				assert(valid);
-				if( pc != pI->pc ) {
-					SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) control hazard instruction flush\n",
-							(*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id() );
-					// control hazard
-					warp(warp_id).set_next_pc(pc);
-					warp(warp_id).ibuffer_flush();
-					m_stats->shader_cycle_distro[2]++; //Control Hazard
-//						m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 18]++; //diverged warp count
-						
-				} else {
-					valid_inst = true;
-					if ( !m_scoreboard->checkCollision(warp_id, pI) ) {
-						SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
-								(*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id() );
-						ready_inst = true;
-						const active_mask_t &active_mask = m_simt_stack[warp_id]->get_active_mask();
-						assert( warp(warp_id).inst_in_pipeline() );
-						if ( (pI->op == LOAD_OP) || (pI->op == STORE_OP) || (pI->op == MEMORY_BARRIER_OP) ) {
-							if( m_mem_out->has_free() ) {
-								m_shader->issue_warp(*m_mem_out,pI,active_mask,warp_id);
-								m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 6]++; // Exec
-								issued++;
-								issued_inst=true;
-								warp_inst_issued = true;
-							}
-							else
-								m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 5]++; // MU Hazard
-						} else {
-							bool sp_pipe_avail = m_sp_out->has_free();
-							bool sfu_pipe_avail = m_sfu_out->has_free();
-							if( sp_pipe_avail && (pI->op != SFU_OP) ) {
-								// always prefer SP pipe for operations that can use both SP and SFU pipelines
-								m_shader->issue_warp(*m_sp_out,pI,active_mask,warp_id);
-								m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 6]++; // Exec
-								issued++;
-								issued_inst=true;
-								warp_inst_issued = true;
-							} else if ( (pI->op == SFU_OP) || (pI->op == ALU_SFU_OP) ) {
-								if( sfu_pipe_avail ) {
-									m_shader->issue_warp(*m_sfu_out,pI,active_mask,warp_id);
-									m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 6]++; // Exec
-									issued++;
-									issued_inst=true;
-									warp_inst_issued = true;
-								}
-								else
-									m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 4]++; // FU Hazard
-							}
-							else if(!sp_pipe_avail)
-								m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 4]++; // FU Hazard
-						}
-					} else {
-						SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) fails scoreboard\n",
-								(*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id() );
-						m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 3]++; // Dependency Hazard
-					}
-				}
-/*				if(warp_inst_issued) {
-					switch(pI->op){
-						case NO_OP:
-							m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 9]++; 
-							break;
-						case ALU_OP:
-							m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 10]++; 
-							break;
-						case SFU_OP:
-							m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 11]++; 
-							break;
-						case ALU_SFU_OP:
-							m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 12]++; 
-							break;	
-						case BRANCH_OP:
-							m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 13]++; 
-							break;	
-						case BARRIER_OP:
-							m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 14]++; 
-							break;	
-						case MEMORY_BARRIER_OP:
-							m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 15]++; 
-							break;	
-						case CALL_OPS:
-							m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 16]++; 
-							break;	
-						case RET_OPS:
-							m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 17]++; 
-							break;	
-						case LOAD_OP:
-						case STORE_OP:
-							break;
-						default:
-							printf("No defined ops: %d\n", pI->op);
-							break;
-					}
-				}*/
-			} else if( valid ) {
-				// this case can happen after a return instruction in diverged warp
-				m_stats->shader_cycle_distro[2]++; //Control Hazard
-				SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) return from diverged warp flush\n",
-						(*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id() );
-				warp(warp_id).set_next_pc(pc);
-				warp(warp_id).ibuffer_flush();
-			}
+		//		while( !warp(warp_id).waiting() && !warp(warp_id).ibuffer_empty() && (checked < max_issue) && (checked <= issued) && (issued < max_issue) ) {
+		while(1) {
+			if(!warp(warp_id).waiting()){
+				no_sync = true;
+				if(!warp(warp_id).ibuffer_empty()){
+					valid_ibff = true;
+					if((checked < max_issue) && (checked <= issued) && (issued < max_issue)){
+						const warp_inst_t *pI = warp(warp_id).ibuffer_next_inst();
+						bool valid = warp(warp_id).ibuffer_next_valid();
+						bool warp_inst_issued = false;
+						unsigned pc,rpc;
+						m_simt_stack[warp_id]->get_pdom_stack_top_info(&pc,&rpc);
+						SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) has valid instruction (%s)\n",
+								(*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id(),
+								ptx_get_insn_str( pc).c_str() );
+						if( pI ) {
+							assert(valid);
+							if( pc != pI->pc ) {
+								SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) control hazard instruction flush\n",
+										(*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id() );
+								// control hazard
+								warp(warp_id).set_next_pc(pc);
+								warp(warp_id).ibuffer_flush();
 
-			if(warp_inst_issued) {
-				SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) issued %u instructions\n",
-						(*iter)->get_warp_id(),
-						(*iter)->get_dynamic_warp_id(),
-						issued );
-				do_on_warp_issued( warp_id, issued, iter );
+							} else {
+								valid_inst = true;
+								if ( !m_scoreboard->checkCollision(warp_id, pI) ) {
+									SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) passes scoreboard\n",
+											(*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id() );
+									ready_inst = true;
+									const active_mask_t &active_mask = m_simt_stack[warp_id]->get_active_mask();
+									assert( warp(warp_id).inst_in_pipeline() );
+									if ( (pI->op == LOAD_OP) || (pI->op == STORE_OP) || (pI->op == MEMORY_BARRIER_OP) ) {
+										if( m_mem_out->has_free() ) {
+											m_shader->issue_warp(*m_mem_out,pI,active_mask,warp_id);
+											m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 6]++; // Exec
+											issued++;
+											issued_inst=true;
+											warp_inst_issued = true;
+										}
+										else{
+											MU_hzrd = true;
+										//	m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 5]++; // MU Hazard
+										}
+									} else {
+										bool sp_pipe_avail = m_sp_out->has_free();
+										bool sfu_pipe_avail = m_sfu_out->has_free();
+										if( sp_pipe_avail && (pI->op != SFU_OP) ) {
+											// always prefer SP pipe for operations that can use both SP and SFU pipelines
+											m_shader->issue_warp(*m_sp_out,pI,active_mask,warp_id);
+											m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 6]++; // Exec
+											issued++;
+											issued_inst=true;
+											warp_inst_issued = true;
+										} else if ( (pI->op == SFU_OP) || (pI->op == ALU_SFU_OP) ) {
+											if( sfu_pipe_avail ) {
+												m_shader->issue_warp(*m_sfu_out,pI,active_mask,warp_id);
+												m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 6]++; // Exec
+												issued++;
+												issued_inst=true;
+												warp_inst_issued = true;
+											}
+											else{
+										//		m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 4]++; // FU Hazard
+												FU_hzrd = true;
+											}
+										}
+										else if(!sp_pipe_avail){
+											FU_hzrd = true;
+										//	m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 4]++; // FU Hazard
+										}
+									}
+								} else {
+									SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) fails scoreboard\n",
+											(*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id() );
+								}
+							}
+						} else if( valid ) {
+							// this case can happen after a return instruction in diverged warp
+							//				CTRL_stall = true
+							m_stats->shader_cycle_distro[2]++; //Control Hazard
+							SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) return from diverged warp flush\n",
+									(*iter)->get_warp_id(), (*iter)->get_dynamic_warp_id() );
+							warp(warp_id).set_next_pc(pc);
+							warp(warp_id).ibuffer_flush();
+						}
+
+						if(warp_inst_issued) {
+							SCHED_DPRINTF( "Warp (warp_id %u, dynamic_warp_id %u) issued %u instructions\n",
+									(*iter)->get_warp_id(),
+									(*iter)->get_dynamic_warp_id(),
+									issued );
+							do_on_warp_issued( warp_id, issued, iter );
+						}
+						checked++;
+					}
+					else
+						break;
+				}
+				else
+					break;
 			}
-			checked++;
+			else
+				if(warp(warp_id).functional_done())
+					unblnce_stall = true;
+				break;
 		}
+
 		if ( issued ) {
 			// This might be a bit inefficient, but we need to maintain
 			// two ordered list for proper scheduler execution.
@@ -1042,16 +1038,33 @@ void scheduler_unit::cycle()
 				}
 			}
 			break;
-		} 
+		}
 	}
 
-	// issue stall statistics:
-    if( !valid_inst ) 
-	      m_stats->shader_cycle_distro[19]++; // idle or control hazard
-	      else if( !ready_inst ) 
-	      m_stats->shader_cycle_distro[20]++; // waiting for RAW hazards (possibly due to memory) 
-	      else if( !issued_inst ) 
-	      m_stats->shader_cycle_distro[21]++; // pipeline stalled*/
+	if( !valid_inst ) {
+		if(! no_sync){
+			if(unblnce_stall)
+				m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 7]++; // idle or control hazard
+			else
+				m_stats->shader_cycle_distro[0]++; // idle or control hazard
+		}
+		else if(! valid_ibff)
+			m_stats->shader_cycle_distro[1]++; // idle or control hazard
+		else
+			m_stats->shader_cycle_distro[2]++; // idle or control hazard
+		m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 19]++; // idle or control hazard
+	}
+	else if( !ready_inst ) {
+		m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 20]++; // waiting for RAW hazards (possibly due to memory) 
+		m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 3]++; // Dependency Hazard
+	}
+	else if( !issued_inst ){ 
+		if(FU_hzrd)
+			m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 4]++; // pipeline stalled*/
+		else if(MU_hzrd)
+			m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 5]++; // pipeline stalled*/
+		m_stats->shader_cycle_distro[m_shader->m_config->warp_size + 21]++; // pipeline stalled*/
+	}
 }
 
 void scheduler_unit::do_on_warp_issued( unsigned warp_id,
@@ -1284,26 +1297,26 @@ unsigned shader_core_ctx::translate_local_memaddr( address_type localaddr, unsig
 	void shader_core_ctx::execute()
 	{
 	for(unsigned i=0; i<num_result_bus; i++){
-										*(m_result_bus[i]) >>=1;
-										}
-										for( unsigned n=0; n < m_num_function_units; n++ ) {
-										unsigned multiplier = m_fu[n]->clock_multiplier();
-										for( unsigned c=0; c < multiplier; c++ ) 
-										m_fu[n]->cycle();
-										m_fu[n]->active_lanes_in_pipeline();
-										enum pipeline_stage_name_t issue_port = m_issue_port[n];
-										register_set& issue_inst = m_pipeline_reg[ issue_port ];
-										warp_inst_t** ready_reg = issue_inst.get_ready();
-										if( issue_inst.has_ready() && m_fu[n]->can_issue( **ready_reg ) ) {
-										bool schedule_wb_now = !m_fu[n]->stallable();
-										int resbus = -1;
-										if( schedule_wb_now && (resbus=test_res_bus( (*ready_reg)->latency ))!=-1 ) {
-										assert( (*ready_reg)->latency < MAX_ALU_LATENCY );
-										m_result_bus[resbus]->set( (*ready_reg)->latency );
-										m_fu[n]->issue( issue_inst );
-										} else if( !schedule_wb_now ) {
-										m_fu[n]->issue( issue_inst );
-										} else {
+					    *(m_result_bus[i]) >>=1;
+					    }
+					    for( unsigned n=0; n < m_num_function_units; n++ ) {
+					    unsigned multiplier = m_fu[n]->clock_multiplier();
+					    for( unsigned c=0; c < multiplier; c++ ) 
+					    m_fu[n]->cycle();
+					    m_fu[n]->active_lanes_in_pipeline();
+					    enum pipeline_stage_name_t issue_port = m_issue_port[n];
+					    register_set& issue_inst = m_pipeline_reg[ issue_port ];
+					    warp_inst_t** ready_reg = issue_inst.get_ready();
+					    if( issue_inst.has_ready() && m_fu[n]->can_issue( **ready_reg ) ) {
+					    bool schedule_wb_now = !m_fu[n]->stallable();
+					    int resbus = -1;
+					    if( schedule_wb_now && (resbus=test_res_bus( (*ready_reg)->latency ))!=-1 ) {
+					    assert( (*ready_reg)->latency < MAX_ALU_LATENCY );
+					    m_result_bus[resbus]->set( (*ready_reg)->latency );
+					    m_fu[n]->issue( issue_inst );
+					    } else if( !schedule_wb_now ) {
+					    m_fu[n]->issue( issue_inst );
+					    } else {
 	// stall issue (cannot reserve result bus)
 	}
 	}
